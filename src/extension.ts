@@ -5,12 +5,9 @@ import { LanguageClient } from 'vscode-languageclient/node';
 import { Utils } from 'vscode-uri';
 import { ClientHandler, TerraformLanguageClient } from './clientHandler';
 import { GenerateBugReportCommand } from './commands/generateBugReport';
-import { DEFAULT_LS_VERSION, isValidVersionString } from './installer/detector';
-import { updateOrInstall } from './installer/updater';
 import { ModuleCallsDataProvider } from './providers/moduleCalls';
 import { ModuleProvidersDataProvider } from './providers/moduleProviders';
 import { ServerPath } from './serverPath';
-import { SingleInstanceTimeout } from './utils';
 import { config, getActiveTextEditor, isTerraformFile } from './vscodeUtils';
 
 const brand = `HashiCorp Terraform`;
@@ -19,7 +16,6 @@ export let terraformStatus: vscode.StatusBarItem;
 
 let reporter: TelemetryReporter;
 let clientHandler: ClientHandler;
-const languageServerUpdater = new SingleInstanceTimeout();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const manifest = context.extension.packageJSON;
@@ -44,15 +40,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   }
 
-  if (config('terraform').has('languageServer.requiredVersion')) {
-    const langServerVer = config('terraform').get('languageServer.requiredVersion', DEFAULT_LS_VERSION);
-    if (!isValidVersionString(langServerVer)) {
-      vscode.window.showWarningMessage(
-        `The Terraform Language Server Version string '${langServerVer}' is not a valid semantic version and will be ignored.`,
-      );
-    }
-  }
-
   // Subscriptions
   context.subscriptions.push(
     vscode.commands.registerCommand('terraform.enableLanguageServer', async () => {
@@ -64,7 +51,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           vscode.ConfigurationTarget.Global,
         );
       }
-      await updateLanguageServer(manifest.version, lsPath);
+      await clientHandler.startClient();
       return clientHandler.startClient();
     }),
     vscode.commands.registerCommand('terraform.disableLanguageServer', async () => {
@@ -76,7 +63,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           vscode.ConfigurationTarget.Global,
         );
       }
-      languageServerUpdater.clear();
       return clientHandler.stopClient();
     }),
     vscode.commands.registerCommand('terraform.apply', async () => {
@@ -141,11 +127,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   if (enabled()) {
     try {
-      await updateLanguageServer(manifest.version, lsPath);
+      await clientHandler.startClient();
       vscode.commands.executeCommand('setContext', 'terraform.showTreeViews', true);
     } catch (error) {
+      console.log(error); // for test failure reporting
       if (error instanceof Error) {
-        reporter.sendTelemetryException(error);
+        vscode.window.showErrorMessage(error instanceof Error ? error.message : error);
+      } else if (typeof error === 'string') {
+        vscode.window.showErrorMessage(error);
       }
     }
   }
@@ -192,49 +181,6 @@ export async function updateTerraformStatusBar(documentUri: vscode.Uri): Promise
       reporter.sendTelemetryException(err);
     }
     terraformStatus.hide();
-  }
-}
-
-async function updateLanguageServer(extVersion: string, lsPath: ServerPath, scheduled = false) {
-  if (config('extensions').get<boolean>('autoCheckUpdates', true) === true) {
-    console.log('Scheduling check for language server updates...');
-    const hour = 1000 * 60 * 60;
-    languageServerUpdater.timeout(function () {
-      updateLanguageServer(extVersion, lsPath, true);
-    }, 24 * hour);
-  }
-
-  if (lsPath.hasCustomBinPath()) {
-    // skip install check if user has specified a custom path to the LS
-    // with custom paths we *need* to start the lang client always
-    await clientHandler.startClient();
-    return;
-  }
-
-  try {
-    await updateOrInstall(
-      config('terraform').get('languageServer.requiredVersion', DEFAULT_LS_VERSION),
-      extVersion,
-      vscode.version,
-      lsPath,
-      reporter,
-    );
-
-    // On scheduled checks, we download to stg and do not replace prod path
-    // So we *do not* need to stop or start the LS
-    if (scheduled) {
-      return;
-    }
-
-    // On fresh starts we *need* to start the lang client always
-    await clientHandler.startClient();
-  } catch (error) {
-    console.log(error); // for test failure reporting
-    if (error instanceof Error) {
-      vscode.window.showErrorMessage(error instanceof Error ? error.message : error);
-    } else if (typeof error === 'string') {
-      vscode.window.showErrorMessage(error);
-    }
   }
 }
 
