@@ -328,7 +328,7 @@
     "download:ls": "ts-node ./build/downloader.ts",
     "vscode:prepublish": "npm run download:ls && npm run compile",
     "package": "vsce package",
-    "pretest": "npm run compile && npm run lint",
+    "pretest": "npm run download:ls && npm run compile && npm run lint",
     "test": "node ./out/test/runTest.js",
     "test:unit": "jest",
     "lint": "eslint src --ext ts",
